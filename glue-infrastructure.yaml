@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Glue jobs infrastructure for lineage tracking'
+
+Resources:
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'lineage-artifacts-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  GlueServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ArtifactsBucket}/*'
+                  - !Sub 'arn:aws:s3:::${ArtifactsBucket}'
+
+  TransformationJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: lineage-transformation-job
+      Role: !GetAtt GlueServiceRole.Arn
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${ArtifactsBucket}/scripts/glue_job_with_openlineage.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--job-language': 'python'
+        '--MARQUEZ_URL': 'http://REPLACE_WITH_MARQUEZ_IP:5000'
+      GlueVersion: '4.0'
+      MaxRetries: 0
+      Timeout: 2880
+
+  AggregationJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: lineage-aggregation-job
+      Role: !GetAtt GlueServiceRole.Arn
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${ArtifactsBucket}/scripts/glue_job_aggregation.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--job-language': 'python'
+        '--MARQUEZ_URL': 'http://REPLACE_WITH_MARQUEZ_IP:5000'
+      GlueVersion: '4.0'
+      MaxRetries: 0
+      Timeout: 2880
+
+Outputs:
+  ArtifactsBucket:
+    Value: !Ref ArtifactsBucket
+    Description: S3 bucket for Glue scripts and artifacts
+    Export:
+      Name: !Sub '${AWS::StackName}-ArtifactsBucket'
+  GlueServiceRole:
+    Value: !GetAtt GlueServiceRole.Arn
+    Description: IAM role for Glue jobs
+    Export:
+      Name: !Sub '${AWS::StackName}-GlueServiceRole'

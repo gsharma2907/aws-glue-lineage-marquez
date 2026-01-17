@@ -1,0 +1,164 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Marquez lineage platform on EC2 with embedded PostgreSQL'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where EC2 instance will be deployed
+  PublicSubnet:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet ID for EC2 instance
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    Description: EC2 instance type
+    AllowedValues:
+      - t3.small
+      - t3.medium
+      - t3.large
+
+Resources:
+  MarquezSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Marquez EC2
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: 0.0.0.0/0
+          Description: Marquez API
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+          Description: Marquez Web UI
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH access
+
+  MarquezInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource: '*'
+
+  MarquezInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref MarquezInstanceRole
+
+  MarquezInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref MarquezSecurityGroup
+      IamInstanceProfile: !Ref MarquezInstanceProfile
+      Tags:
+        - Key: Name
+          Value: marquez-server
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -e
+          
+          # Install Docker
+          yum update -y
+          yum install -y docker
+          systemctl start docker
+          systemctl enable docker
+          usermod -a -G docker ec2-user
+          
+          # Install Docker Compose
+          curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+          
+          # Create docker-compose.yml
+          cat > /tmp/docker-compose.yml <<'COMPOSE'
+          version: "3.7"
+          services:
+            postgres:
+              image: postgres:12
+              container_name: marquez-db
+              environment:
+                - POSTGRES_USER=marquez
+                - POSTGRES_PASSWORD=marquez
+                - POSTGRES_DB=marquez
+              ports:
+                - "5432:5432"
+              volumes:
+                - postgres-data:/var/lib/postgresql/data
+
+            marquez:
+              image: marquezproject/marquez:latest
+              container_name: marquez-api
+              ports:
+                - "5000:5000"
+                - "5001:5001"
+              environment:
+                - POSTGRES_HOST=postgres
+                - POSTGRES_PORT=5432
+                - POSTGRES_DB=marquez
+                - POSTGRES_USER=marquez
+                - POSTGRES_PASSWORD=marquez
+              depends_on:
+                - postgres
+
+            marquez-web:
+              image: marquezproject/marquez-web:latest
+              container_name: marquez-web
+              ports:
+                - "3000:3000"
+              environment:
+                - MARQUEZ_HOST=marquez
+                - MARQUEZ_PORT=5000
+                - WEB_PORT=3000
+              depends_on:
+                - marquez
+
+          volumes:
+            postgres-data:
+          COMPOSE
+          
+          # Start Marquez
+          cd /tmp
+          /usr/local/bin/docker-compose up -d
+
+Outputs:
+  MarquezApiUrl:
+    Value: !Sub 'http://${MarquezInstance.PublicIp}:5000'
+    Description: Marquez API endpoint
+    Export:
+      Name: !Sub '${AWS::StackName}-MarquezApiUrl'
+  MarquezWebUrl:
+    Value: !Sub 'http://${MarquezInstance.PublicIp}:3000'
+    Description: Marquez Web UI
+    Export:
+      Name: !Sub '${AWS::StackName}-MarquezWebUrl'
+  InstanceId:
+    Value: !Ref MarquezInstance
+    Description: EC2 Instance ID
