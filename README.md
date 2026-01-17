@@ -14,7 +14,6 @@ This project demonstrates how to implement end-to-end data lineage tracking for 
 - ✅ Interactive lineage visualization
 - ✅ Schema tracking and evolution
 - ✅ Impact analysis and root cause tracing
-- ✅ Production-ready architecture guidance
 
 ## Architecture
 
